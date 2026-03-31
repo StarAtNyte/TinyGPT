@@ -41,23 +41,23 @@ class ScalarValue:
     def __mul__(self, other):
         other = other if isinstance(other, ScalarValue) else ScalarValue(other)
         return ScalarValue(
-            data = self.data * other.data,
-            parents(self,other),
-            local_grads = (other.data, self.data),
+            data=self.data * other.data,
+            parents=(self, other),
+            local_grads=(other.data, self.data),
         )
 
-    def __rmul__(self,other):
+    def __rmul__(self, other):
         return self.__mul__(other)
 
-    def __pow__(self,exponent):
+    def __pow__(self, exponent):
         return ScalarValue(
-            data = self.data**exponent,
-            parents = (self,),
-            local_grads = (exponent* self.data **(exponent-1),),
+            data=self.data**exponent,
+            parents=(self,),
+            local_grads=(exponent * self.data ** (exponent - 1),),
         )
 
     def __sub__(self, other):
-        return self + (other *-1)
+        return self + (other * -1)
 
     def __neg__(self):
         return self * -1
@@ -67,23 +67,23 @@ class ScalarValue:
 
     def log(self):
         return ScalarValue(
-            data = math.log(self.data),
-            parents = (self,),
-            local_grads = (1/self.data,),
+            data=math.log(self.data),
+            parents=(self,),
+            local_grads=(1 / self.data,),
         )
 
     def exp(self):
         return ScalarValue(
-            data = math.exp(self.data),
-            parents = (self,),
-            local_grads = (math.exp(self.data),)
+            data=math.exp(self.data),
+            parents=(self,),
+            local_grads=(math.exp(self.data),),
         )
 
     def relu(self):
         return ScalarValue(
-            data = max(0.0,self.data),
-            parents = (self,),
-            local_grads = (1 if self.data > 0 else 0,)
+            data=max(0.0, self.data),
+            parents=(self,),
+            local_grads=(1 if self.data > 0 else 0,),
         )
 
     def backward(self):
@@ -104,3 +104,10 @@ class ScalarValue:
         for node in reversed(topo_order):
             for parent, local_grad in zip(node.parents, node.local_grads):
                 parent.grad += node.grad * local_grad
+
+
+def make_weight_matrix(num_rows, num_cols):
+    return [
+        [ScalarValue(random.gauss(0, 0.08)) for _ in range(num_cols)]
+        for _ in range(num_rows)
+    ]
