@@ -1,9 +1,9 @@
 import math
 import random
 
-random.seed(42)
+random.seed(67)
 
-TEXT = "Peter Piper picked a peck of pickled peppers. A peck of pickled peppers Peter Piper picked. If Peter Piper picked a peck of pickled peppers,Where's the peck of pickled peppers Peter Piper picked?"
+TEXT = "Peter Piper picked a peck of pickled peppers.\nA peck of pickled peppers Peter Piper picked.\nIf Peter Piper picked a peck of pickled peppers,\nWhere's the peck of pickled peppers Peter Piper picked?\n"
 
 vocab_chars = sorted(set(TEXT))
 vocab_size = len(vocab_chars)
@@ -12,14 +12,11 @@ EMBED_DIM = 16
 NUM_LAYERS = 1
 LEARN_RATE = 0.01
 
-print(f"Vocab size: {vocab_size}")
-
-all_token_ids = [vocab_chars.index(c) for c in TEXT]
-train_token_ids = all_token_ids[: int(len(all_token_ids) * 0.9)]
-val_token_ids = all_token_ids[int(len(all_token_ids) * 0.9) :]
+token_ids = [vocab_chars.index(c) for c in TEXT]
+train_token_ids = token_ids[: int(len(token_ids) * 0.9)]
+val_token_ids = token_ids[int(len(token_ids) * 0.9) :]
 
 
-# AUTOGRAD ENGINE
 class ScalarValue:
     def __init__(self, data, parents=(), local_grads=()):
         self.data = float(data)
@@ -29,11 +26,7 @@ class ScalarValue:
 
     def __add__(self, other):
         other = other if isinstance(other, ScalarValue) else ScalarValue(other)
-        return ScalarValue(
-            data=self.data + other.data,
-            parents=(self, other),
-            local_grads=(1.0, 1.0),
-        )
+        return ScalarValue(self.data + other.data, (self, other), (1, 1))
 
     def __radd__(self, other):
         return self.__add__(other)
@@ -41,20 +34,14 @@ class ScalarValue:
     def __mul__(self, other):
         other = other if isinstance(other, ScalarValue) else ScalarValue(other)
         return ScalarValue(
-            data=self.data * other.data,
-            parents=(self, other),
-            local_grads=(other.data, self.data),
+            self.data * other.data, (self, other), (other.data, self.data)
         )
 
     def __rmul__(self, other):
         return self.__mul__(other)
 
-    def __pow__(self, exponent):
-        return ScalarValue(
-            data=self.data**exponent,
-            parents=(self,),
-            local_grads=(exponent * self.data ** (exponent - 1),),
-        )
+    def __pow__(self, exp):
+        return ScalarValue(self.data**exp, (self,), (exp * self.data ** (exp - 1),))
 
     def __sub__(self, other):
         return self + (other * -1)
@@ -63,53 +50,40 @@ class ScalarValue:
         return self * -1
 
     def __truediv__(self, other):
-        return self * (1 / other)
+        if isinstance(other, ScalarValue):
+            return self * (1.0 / other.data)
+        return self * (1.0 / other)
 
     def log(self):
-        return ScalarValue(
-            data=math.log(self.data),
-            parents=(self,),
-            local_grads=(1 / self.data,),
-        )
+        return ScalarValue(math.log(self.data), (self,), (1 / self.data,))
 
     def exp(self):
-        return ScalarValue(
-            data=math.exp(self.data),
-            parents=(self,),
-            local_grads=(math.exp(self.data),),
-        )
+        e = math.exp(self.data)
+        return ScalarValue(e, (self,), (e,))
 
     def relu(self):
-        return ScalarValue(
-            data=max(0.0, self.data),
-            parents=(self,),
-            local_grads=(1 if self.data > 0 else 0,),
-        )
+        return ScalarValue(max(0.0, self.data), (self,), (float(self.data > 0),))
 
     def backward(self):
-        topo_order = []
-        visited = set()
+        topo, seen = [], set()
 
         def dfs(node):
-            if node not in visited:
-                visited.add(node)
+            if node not in seen:
+                seen.add(node)
                 for parent in node.parents:
                     dfs(parent)
-                topo_order.append(node)
+                topo.append(node)
 
         dfs(self)
-
         self.grad = 1.0
+        for node in reversed(topo):
+            for parent, lg in zip(node.parents, node.local_grads):
+                parent.grad += node.grad * lg
 
-        for node in reversed(topo_order):
-            for parent, local_grad in zip(node.parents, node.local_grads):
-                parent.grad += node.grad * local_grad
 
-
-def make_weight_matrix(num_rows, num_cols):
+def make_weight_matrix(rows, cols):
     return [
-        [ScalarValue(random.gauss(0, 0.08)) for _ in range(num_cols)]
-        for _ in range(num_rows)
+        [ScalarValue(random.gauss(0, 0.08)) for _ in range(cols)] for _ in range(rows)
     ]
 
 
@@ -120,96 +94,128 @@ state_dict = {
 }
 
 for layer_idx in range(NUM_LAYERS):
-    prefix = f"layer{layer_idx}"
-    for proj_name in ("query", "key", "value", "out"):
-        state_dict[f"{prefix}.{proj_name}"] = make_weight_matrix(EMBED_DIM, EMBED_DIM)
+    for proj in ("query", "key", "value", "out"):
+        state_dict[f"layer{layer_idx}.{proj}"] = make_weight_matrix(
+            EMBED_DIM, EMBED_DIM
+        )
+    state_dict[f"layer{layer_idx}.ffn1"] = make_weight_matrix(EMBED_DIM * 4, EMBED_DIM)
+    state_dict[f"layer{layer_idx}.ffn2"] = make_weight_matrix(EMBED_DIM, EMBED_DIM * 4)
 
-    state_dict[f"{prefix}.ffn1"] = make_weight_matrix(EMBED_DIM * 4, EMBED_DIM)
-    state_dict[f"{prefix}.ffn2"] = make_weight_matrix(EMBED_DIM, EMBED_DIM * 4)
-
-all_params = [
-    scalar
-    for weight_matrix in state_dict.values()
-    for row in weight_matrix
-    for scalar in row
-]
+all_params = [p for w in state_dict.values() for row in w for p in row]
 
 
-def linear(input_vec, weight_matrix):
-    return [
-        sum((w_ij * x_j for w_ij, x_j in zip(weight_row, input_vec)), ScalarValue(0))
-        for weight_row in weight_matrix
-    ]
+def linear(x, w):
+    return [sum((wi * xi for wi, xi in zip(row, x)), ScalarValue(0.0)) for row in w]
 
 
-def rms_norm(input_vec):
-    n = len(input_vec)
-    mean_sq = sum((xi * xi for xi in input_vec), ScalarValue(0.0)) / n
+def rms_norm(x):
+    mean_sq = sum((xi * xi for xi in x), ScalarValue(0.0)) * (1 / len(x))
     inv_rms = (mean_sq + 1e-5) ** -0.5
-    return [xi * inv_rms for xi in input_vec]
+    return [xi * inv_rms for xi in x]
 
 
-def softmax(logit_list):
-    max_val = max(sv.data for sv in logit_list)
-    exp_vals = [(sv - max_val).exp() for sv in logit_list]
-    total = sum(exp_vals, ScalarValue(0.0))
-    return [e / total for e in exp_vals]
+def softmax(xs):
+    max_val = max(x.data for x in xs)
+    exps = [(x - max_val).exp() for x in xs]
+    total = sum(exps, ScalarValue(0.0))
+    return [e * (total**-1) for e in exps]
 
 
-def transformer_forward(token_id, position, kv_cache_keys, kv_cache_values):
-    token_emb = state_dict["wte"][token_id]
-    pos_emb = state_dict["wpe"][position]
-    hidden = rms_norm([te + pe for te, pe in zip(token_emb, pos_emb)])
+def transformer_forward(token_id, position, kv_keys, kv_vals):
+    hidden = rms_norm(
+        [
+            te + pe
+            for te, pe in zip(state_dict["wte"][token_id], state_dict["wpe"][position])
+        ]
+    )
 
     for layer_idx in range(NUM_LAYERS):
-        pfx = f"later{layer_idx}"
-
         residual = hidden
-        norm_hidden = rms_norm(hidden)
+        normed_hidden = rms_norm(hidden)
 
-        query_vec = linear(norm_hidden, state_dict[f"{pfx}.query"])
-        key_vec = linear(norm_hidden, state_dict[f"{pfx}.key"])
-        val_vec = linear(norm_hidden, state_dict[f"{pfx}.value"])
+        query = linear(normed_hidden, state_dict[f"layer{layer_idx}.query"])
+        key = linear(normed_hidden, state_dict[f"layer{layer_idx}.key"])
+        value = linear(normed_hidden, state_dict[f"layer{layer_idx}.value"])
 
-        kv_cache_keys[layer_idx].append(key_vec)
-        kv_cache_values[layer_idx].append(val_vec)
+        kv_keys[layer_idx].append(key)
+        kv_vals[layer_idx].append(value)
 
-        num_past_tokens = len(kv_cache_keys[layer_idx])
-
-        scale_factor = EMBED_DIM**-0.5
-        attention_logits = [
+        attn_logits = [
             sum(
-                (query_vec[j] * kv_cache_keys[layer_idx][t] for j in range(EMBED_DIM)),
+                (query[j] * kv_keys[layer_idx][t][j] for j in range(EMBED_DIM)),
                 ScalarValue(0.0),
             )
-            * scale_factor
-            for t in range(num_past_tokens)
+            * (EMBED_DIM**-0.5)
+            for t in range(len(kv_keys[layer_idx]))
         ]
 
-        attention_weights = softmax(attention_logits)
+        attn_weights = softmax(attn_logits)
 
-        context_vec = [
+        context = [
             sum(
                 (
-                    attention_weights[t] * kv_cache_values[layer_idx][t]
-                    for t in range(num_past_tokens)
+                    attn_weights[t] * kv_vals[layer_idx][t][j]
+                    for t in range(len(kv_vals[layer_idx]))
                 ),
                 ScalarValue(0.0),
             )
             for j in range(EMBED_DIM)
         ]
 
-        attn_out = linear(context_vec, state_dict[f"{pfx}.out"])
-        hidden = [h + ao for h, ao in zip(residual, attn_out)]
+        attn_out = linear(context, state_dict[f"layer{layer_idx}.out"])
+        hidden = [r + ao for r, ao in zip(residual, attn_out)]
 
-        ffn_input = rms_norm(hidden)
-        ffn_expanded = [
-            xi.relu() for xi in linear(ffn_input, state_dict[f"{pfx}.ffn1"])
+        ffn_hidden = [
+            xi.relu()
+            for xi in linear(rms_norm(hidden), state_dict[f"layer{layer_idx}.ffn1"])
         ]
-        ffn_output = linear(ffn_expanded, state_dict[f"{pfx}.ffn2"])
-        hidden = [h + fo for h, fo in zip(hidden, ffn_output)]
+        ffn_out = linear(ffn_hidden, state_dict[f"layer{layer_idx}.ffn2"])
+        hidden = [h + fo for h, fo in zip(hidden, ffn_out)]
 
-    logits = linear(hidden, state_dict["lm"])
-    return logits
+    return linear(hidden, state_dict["lm"])
 
-def compute_loss(token_id_sequence):
+
+def compute_loss(seq_ids):
+    n = min(CONTEXT_LEN, len(seq_ids) - 1)
+    kv_keys = [[] for _ in range(NUM_LAYERS)]
+    kv_vals = [[] for _ in range(NUM_LAYERS)]
+    total_loss = ScalarValue(0.0)
+    for pos in range(n):
+        logits = transformer_forward(seq_ids[pos], pos, kv_keys, kv_vals)
+        probs = softmax(logits)
+        total_loss = total_loss + (probs[seq_ids[pos + 1]].log() * -1)
+    return total_loss * (1 / n)
+
+
+def generate_text(prompt="Peter Piper "):
+    token_ids = [vocab_chars.index(c) for c in prompt]
+    print(prompt, end="", flush=True)
+    for _ in range(50):
+        kv_keys = [[] for _ in range(NUM_LAYERS)]
+        kv_vals = [[] for _ in range(NUM_LAYERS)]
+        for pos, tok in enumerate(token_ids[-CONTEXT_LEN:]):
+            logits = transformer_forward(tok, pos, kv_keys, kv_vals)
+        next_tok = random.choices(
+            range(vocab_size), weights=[p.data for p in softmax(logits)]
+        )[0]
+        token_ids.append(next_tok)
+        print(vocab_chars[next_tok], end="", flush=True)
+    print()
+
+
+for step in range(501):
+    if step % 100 == 0:
+        val_loss = compute_loss(val_token_ids[: CONTEXT_LEN + 1]).data
+        print(f"step {step}: val_loss={val_loss:.4f}")
+        generate_text()
+
+    start_idx = random.randint(0, len(train_token_ids) - CONTEXT_LEN - 1)
+    loss = compute_loss(train_token_ids[start_idx : start_idx + CONTEXT_LEN + 1])
+    loss.backward()
+
+    for param in all_params:
+        param.mean_sq_grad = 0.99 * getattr(param, "mean_sq_grad", 0.0) + 0.01 * (
+            param.grad**2
+        )
+        param.data -= LEARN_RATE * param.grad / (param.mean_sq_grad**0.5 + 1e-8)
+        param.grad = 0.0
