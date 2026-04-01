@@ -111,3 +111,46 @@ def make_weight_matrix(num_rows, num_cols):
         [ScalarValue(random.gauss(0, 0.08)) for _ in range(num_cols)]
         for _ in range(num_rows)
     ]
+
+
+state_dict = {
+    "wte": make_weight_matrix(vocab_size, EMBED_DIM),
+    "wpe": make_weight_matrix(CONTEXT_LEN, EMBED_DIM),
+    "lm": make_weight_matrix(vocab_size, EMBED_DIM),
+}
+
+for layer_idx in range(NUM_LAYERS):
+    prefix = f"layer{layer_idx}"
+    for proj_name in ("query", "key", "value", "out"):
+        state_dict[f"{prefix}.{proj_name}"] = make_weight_matrix(EMBED_DIM, EMBED_DIM)
+
+    state_dict[f"{prefix}.ffn1"] = make_weight_matrix(EMBED_DIM * 4, EMBED_DIM)
+    state_dict[f"{prefix}.ffn2"] = make_weight_matrix(EMBED_DIM, EMBED_DIM * 4)
+
+all_params = [
+    scalar
+    for weight_matrix in state_dict.values()
+    for row in weight_matrix
+    for scalar in row
+]
+
+
+def linear(input_vec, weight_matrix):
+    return [
+        sum((w_ij * x_j for w_ij, x_j in zip(weight_row, input_vec)), ScalarValue(0))
+        for weight_row in weight_matrix
+    ]
+
+
+def rms_norm(input_vec):
+    n = len(input_vec)
+    mean_sq = sum((xi * xi for xi in input_vec), ScalarValue(0.0)) / n
+    inv_rms = (mean_sq + 1e-5) ** -0.5
+    return [xi * inv_rms for xi in input_vec]
+
+
+def softmax(logit_list):
+    max_val = max(sv.data for sv in logit_list)
+    exp_vals = [(sv - max_val).exp() for sv in logit_list]
+    total = sum(exp_vals, ScalarValue(0.0))
+    return [e / total for e in exp_vals]
