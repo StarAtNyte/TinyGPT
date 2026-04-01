@@ -3,7 +3,7 @@ import random
 
 random.seed(67)
 
-TEXT = "Peter Piper picked a peck of pickled peppers.\nA peck of pickled peppers Peter Piper picked.\nIf Peter Piper picked a peck of pickled peppers,\nWhere's the peck of pickled peppers Peter Piper picked?\n"
+TEXT = "Betty Botter bought some butter but she said the butter's bitter.\nIf I put it in my batter it will make my batter bitter.\nBut a bit of better butter will make my batter better.\nSo she bought a bit of butter better than her bitter butter.\nAnd she put it in her batter and the batter was not bitter.\nSo it was better Betty Botter bought a bit of better butter.\n"
 
 vocab_chars = sorted(set(TEXT))
 vocab_size = len(vocab_chars)
@@ -187,7 +187,7 @@ def compute_loss(seq_ids):
     return total_loss * (1 / n)
 
 
-def generate_text(prompt="Peter Piper "):
+def generate_text(prompt="Betty Botter "):
     token_ids = [vocab_chars.index(c) for c in prompt]
     print(prompt, end="", flush=True)
     for _ in range(50):
