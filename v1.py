@@ -154,3 +154,62 @@ def softmax(logit_list):
     exp_vals = [(sv - max_val).exp() for sv in logit_list]
     total = sum(exp_vals, ScalarValue(0.0))
     return [e / total for e in exp_vals]
+
+
+def transformer_forward(token_id, position, kv_cache_keys, kv_cache_values):
+    token_emb = state_dict["wte"][token_id]
+    pos_emb = state_dict["wpe"][position]
+    hidden = rms_norm([te + pe for te, pe in zip(token_emb, pos_emb)])
+
+    for layer_idx in range(NUM_LAYERS):
+        pfx = f"later{layer_idx}"
+
+        residual = hidden
+        norm_hidden = rms_norm(hidden)
+
+        query_vec = linear(norm_hidden, state_dict[f"{pfx}.query"])
+        key_vec = linear(norm_hidden, state_dict[f"{pfx}.key"])
+        val_vec = linear(norm_hidden, state_dict[f"{pfx}.value"])
+
+        kv_cache_keys[layer_idx].append(key_vec)
+        kv_cache_values[layer_idx].append(val_vec)
+
+        num_past_tokens = len(kv_cache_keys[layer_idx])
+
+        scale_factor = EMBED_DIM**-0.5
+        attention_logits = [
+            sum(
+                (query_vec[j] * kv_cache_keys[layer_idx][t] for j in range(EMBED_DIM)),
+                ScalarValue(0.0),
+            )
+            * scale_factor
+            for t in range(num_past_tokens)
+        ]
+
+        attention_weights = softmax(attention_logits)
+
+        context_vec = [
+            sum(
+                (
+                    attention_weights[t] * kv_cache_values[layer_idx][t]
+                    for t in range(num_past_tokens)
+                ),
+                ScalarValue(0.0),
+            )
+            for j in range(EMBED_DIM)
+        ]
+
+        attn_out = linear(context_vec, state_dict[f"{pfx}.out"])
+        hidden = [h + ao for h, ao in zip(residual, attn_out)]
+
+        ffn_input = rms_norm(hidden)
+        ffn_expanded = [
+            xi.relu() for xi in linear(ffn_input, state_dict[f"{pfx}.ffn1"])
+        ]
+        ffn_output = linear(ffn_expanded, state_dict[f"{pfx}.ffn2"])
+        hidden = [h + fo for h, fo in zip(hidden, ffn_output)]
+
+    logits = linear(hidden, state_dict["lm"])
+    return logits
+
+def compute_loss(token_id_sequence):
